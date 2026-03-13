@@ -56,14 +56,16 @@ function App() {
             formData.append('transcript', transcript)
           }
 
-          response = await fetch('http://localhost:3001/analyze', {
+          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+          response = await fetch(`${apiUrl}/analyze`, {
             method: 'POST',
             body: formData,
             signal: controller.signal,
           })
         } else {
           // Use JSON for text-only input
-          response = await fetch('http://localhost:3001/analyze', {
+          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+          response = await fetch(`${apiUrl}/analyze`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
