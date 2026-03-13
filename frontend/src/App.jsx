@@ -56,7 +56,8 @@ function App() {
             formData.append('transcript', transcript)
           }
 
-          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+          // Use relative API path for production, or VITE_API_URL for local development
+          const apiUrl = import.meta.env.VITE_API_URL || '/api'
           response = await fetch(`${apiUrl}/analyze`, {
             method: 'POST',
             body: formData,
@@ -64,7 +65,8 @@ function App() {
           })
         } else {
           // Use JSON for text-only input
-          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+          // Use relative API path for production, or VITE_API_URL for local development
+          const apiUrl = import.meta.env.VITE_API_URL || '/api'
           response = await fetch(`${apiUrl}/analyze`, {
             method: 'POST',
             headers: {
@@ -97,10 +99,17 @@ function App() {
     } catch (err) {
       if (err.name === 'AbortError') {
         setError('Request timeout. The transcript may be too long. Please try with a shorter transcript or wait a moment and try again.')
+      } else if (err.message === 'Failed to fetch' || err.message.includes('fetch')) {
+        setError('Unable to connect to the server. Please check your internet connection and try again. If the problem persists, the server may be temporarily unavailable.')
       } else {
         setError(err.message || 'An error occurred while analyzing the transcript')
       }
       console.error('Error:', err)
+      console.error('Error details:', {
+        name: err.name,
+        message: err.message,
+        stack: err.stack
+      })
     } finally {
       setLoading(false)
       setProgressStage('')

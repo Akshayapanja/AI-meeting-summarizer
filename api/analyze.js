@@ -227,31 +227,50 @@ const extractJSON = (text) => {
 };
 
 // Parse multipart form data using busboy (for Vercel serverless functions)
+// Vercel serverless functions require piping req directly to busboy
 const parseMultipartFormData = async (req) => {
   return new Promise((resolve, reject) => {
     const contentType = req.headers['content-type'] || '';
     
     if (!contentType.includes('multipart/form-data')) {
-      reject(new Error('Content-Type must be multipart/form-data'));
+      wrappedReject(new Error('Content-Type must be multipart/form-data'));
       return;
     }
     
     let fileBuffer = null;
     let fileName = null;
     let transcript = '';
-    let hasFile = false;
     let hasError = false;
-    let fieldsProcessed = false;
+    let fileProcessed = false;
+    let busboyFinished = false;
+    
+    // Wrap resolve and reject to handle timeout cleanup
+    let timeoutId = null;
+    const wrappedResolve = (value) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      resolve(value);
+    };
+    const wrappedReject = (error) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      reject(error);
+    };
+    
+    // Add timeout to prevent hanging
+    timeoutId = setTimeout(() => {
+      if (!busboyFinished && !hasError) {
+        hasError = true;
+        wrappedReject(new Error('Request timeout: Multipart parsing took too long'));
+      }
+    }, 30000); // 30 second timeout
     
     // Create busboy instance
     const busboy = Busboy({ headers: req.headers });
     
     // Handle file field
     busboy.on('file', (fieldname, file, info) => {
-      const { filename, encoding, mimeType } = info;
+      const { filename } = info;
       
       if (fieldname === 'file') {
-        hasFile = true;
         fileName = filename;
         const chunks = [];
         
@@ -261,15 +280,16 @@ const parseMultipartFormData = async (req) => {
         
         file.on('end', () => {
           fileBuffer = Buffer.concat(chunks);
+          fileProcessed = true;
           console.log(`File received: ${filename}, size: ${fileBuffer.length} bytes`);
-          checkComplete();
+          // Don't resolve here - wait for busboy finish event
         });
         
         file.on('error', (err) => {
           console.error('File stream error:', err);
           if (!hasError) {
             hasError = true;
-            reject(new Error(`File upload error: ${err.message}`));
+            wrappedReject(new Error(`File upload error: ${err.message}`));
           }
         });
       } else {
@@ -284,33 +304,26 @@ const parseMultipartFormData = async (req) => {
         transcript = value;
         console.log('Transcript field received, length:', value.length);
       }
-      fieldsProcessed = true;
     });
     
-    // Check if parsing is complete
-    const checkComplete = () => {
-      // Wait a bit to ensure all events are processed
-      setTimeout(() => {
-        if (!hasError) {
-          console.log('Busboy finished parsing:', {
-            hasFile,
-            fileName,
-            fileSize: fileBuffer?.length || 0,
-            transcriptLength: transcript.length
-          });
-          
-          resolve({
-            file: fileBuffer ? { buffer: fileBuffer, originalname: fileName } : null,
-            transcript: transcript || ''
-          });
-        }
-      }, 100);
-    };
-    
-    // Handle finish event
+    // Handle finish event - this fires when busboy finishes parsing all data
     busboy.on('finish', () => {
       console.log('Busboy finish event triggered');
-      checkComplete();
+      busboyFinished = true;
+      
+      if (!hasError) {
+        console.log('Busboy parsing complete:', {
+          hasFile: !!fileBuffer,
+          fileName,
+          fileSize: fileBuffer?.length || 0,
+          transcriptLength: transcript.length
+        });
+        
+        wrappedResolve({
+          file: fileBuffer ? { buffer: fileBuffer, originalname: fileName } : null,
+          transcript: transcript || ''
+        });
+      }
     });
     
     // Handle errors
@@ -318,69 +331,67 @@ const parseMultipartFormData = async (req) => {
       console.error('Busboy error:', err);
       if (!hasError) {
         hasError = true;
-        reject(new Error(`Failed to parse multipart form data: ${err.message}`));
+        wrappedReject(new Error(`Failed to parse multipart form data: ${err.message}`));
       }
     });
     
-    // Handle request body - Vercel provides body as buffer, string, or stream
+    // Pipe request directly to busboy (Vercel serverless functions support this)
     try {
-      let bodyBuffer;
+      console.log('Setting up busboy parser, req.body type:', typeof req.body);
+      console.log('req.pipe available:', typeof req.pipe === 'function');
+      console.log('req.on available:', typeof req.on === 'function');
       
-      // Try to get body from req.body (Vercel may provide it as buffer or string)
-      if (Buffer.isBuffer(req.body)) {
-        bodyBuffer = req.body;
-        console.log('Using req.body as Buffer, length:', bodyBuffer.length);
+      // In Vercel, req should be a readable stream that can be piped directly to busboy
+      if (req.pipe && typeof req.pipe === 'function') {
+        console.log('Piping req directly to busboy');
+        req.pipe(busboy);
+      } else if (Buffer.isBuffer(req.body)) {
+        // Fallback: if body is already a buffer
+        console.log('Using req.body as Buffer, length:', req.body.length);
+        busboy.end(req.body);
       } else if (typeof req.body === 'string') {
-        // Convert string to buffer
-        bodyBuffer = Buffer.from(req.body, 'binary');
-        console.log('Using req.body as String, converted to Buffer, length:', bodyBuffer.length);
-      } else if (req.body === null || req.body === undefined) {
-        // Body might not be available - try to read from request stream
-        // In Vercel, we might need to collect chunks manually
-        console.log('req.body is null/undefined, attempting to read from request stream...');
-        
-        if (req.on && typeof req.on === 'function') {
-          // Request is a stream
-          const chunks = [];
-          req.on('data', (chunk) => {
-            chunks.push(chunk);
-          });
-          req.on('end', () => {
-            bodyBuffer = Buffer.concat(chunks);
-            console.log('Collected body from stream, length:', bodyBuffer.length);
-            busboy.end(bodyBuffer);
-          });
-          req.on('error', (err) => {
-            console.error('Request stream error:', err);
-            if (!hasError) {
-              hasError = true;
-              reject(new Error(`Error reading request stream: ${err.message}`));
-            }
-          });
-          return; // Don't call busboy.end() here, it will be called in 'end' handler
-        } else {
-          reject(new Error('Request body is not available and request is not a stream. This may be a Vercel configuration issue.'));
-          return;
-        }
-      } else if (req.body && typeof req.body === 'object') {
-        // If body is already parsed (shouldn't happen for multipart, but handle it)
-        reject(new Error('Request body appears to be already parsed. Ensure Content-Type is multipart/form-data and body parsing is disabled.'));
-        return;
+        // Fallback: if body is a string
+        console.log('Using req.body as String, converting to Buffer');
+        busboy.end(Buffer.from(req.body, 'binary'));
+      } else if (req.on && typeof req.on === 'function') {
+        // Try to read from request stream
+        console.log('Reading from request stream');
+        const chunks = [];
+        req.on('data', (chunk) => {
+          chunks.push(chunk);
+        });
+        req.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          console.log('Collected buffer from stream, length:', buffer.length);
+          busboy.end(buffer);
+        });
+        req.on('error', (err) => {
+          console.error('Request stream error:', err);
+          if (!hasError) {
+            hasError = true;
+            wrappedReject(new Error(`Error reading request stream: ${err.message}`));
+          }
+        });
       } else {
-        reject(new Error(`Unable to read request body. Type: ${typeof req.body}, Value: ${req.body}`));
-        return;
-      }
-      
-      // Write body buffer to busboy (only if we have the buffer immediately)
-      if (bodyBuffer) {
-        busboy.end(bodyBuffer);
+        // Last resort: try to use req.body even if it's an object
+        console.log('Attempting to use req.body as-is, type:', typeof req.body);
+        if (req.body) {
+          try {
+            const bodyStr = JSON.stringify(req.body);
+            wrappedReject(new Error('Request body appears to be parsed JSON. For file uploads, ensure Content-Type is multipart/form-data and body is not pre-parsed.'));
+          } catch (e) {
+            wrappedReject(new Error(`Unable to process request body. Type: ${typeof req.body}. Vercel may not be providing the raw request body.`));
+          }
+        } else {
+          wrappedReject(new Error('Request body is not available. This may be a Vercel configuration issue.'));
+        }
       }
     } catch (error) {
-      console.error('Error processing request body:', error);
+      console.error('Error setting up request pipe:', error);
       console.error('Error stack:', error.stack);
       if (!hasError) {
         hasError = true;
-        reject(new Error(`Error reading request body: ${error.message}`));
+        wrappedReject(new Error(`Error processing request: ${error.message}`));
       }
     }
   });
