@@ -15,21 +15,29 @@ export default defineConfig({
     }
   },
   build: {
-    chunkSizeWarningLimit: 2000, // Increased to 2MB to avoid warnings
+    chunkSizeWarningLimit: 1000, // Set to 1MB (1000KB) - warnings will be suppressed with proper chunking
     rollupOptions: {
       output: {
         manualChunks: (id) => {
-          // Split node_modules into separate chunks
+          // Split node_modules into separate chunks for better caching
           if (id.includes('node_modules')) {
+            // React and React DOM together
             if (id.includes('react') || id.includes('react-dom')) {
               return 'react-vendor';
             }
+            // PDF library separate
             if (id.includes('jspdf')) {
               return 'pdf-vendor';
             }
-            // Other node_modules go into vendor chunk
+            // Vite and other build tools
+            if (id.includes('vite') || id.includes('@vitejs')) {
+              return 'vite-vendor';
+            }
+            // All other node_modules dependencies
             return 'vendor';
           }
+          // Return undefined for non-node_modules to let Rollup handle automatically
+          return undefined;
         },
         // Optimize chunk file names
         chunkFileNames: 'assets/js/[name]-[hash].js',
