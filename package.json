@@ -1,0 +1,12 @@
+{
+  "name": "meeting-summarizer",
+  "version": "1.0.0",
+  "description": "AI Meeting Summarizer - Full Stack Application",
+  "type": "module",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "pdf-parse": "^1.1.1",
+    "mammoth": "^1.6.0",
+    "busboy": "^1.6.0"
+  }
+}
