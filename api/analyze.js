@@ -560,7 +560,8 @@ export default async function handler(req, res) {
     }, {
       timeout: calculatedTimeout,
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true' // Bypass ngrok free tier warning page
       }
     });
     
